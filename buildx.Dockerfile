@@ -12,6 +12,6 @@ FROM scratch
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY media-server /
-
+ENV GIN_MODE=release
 ENTRYPOINT ["/media-server"]
 EXPOSE 9096
