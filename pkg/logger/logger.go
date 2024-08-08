@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"go.uber.org/zap"
@@ -23,7 +24,6 @@ func Init() *zap.Logger {
 		LocalTime:  true,        // 使用本地时间
 		// Compress:   true,        // 是否压缩旧日志文件
 	})
-
 	// 设置中国时区
 	chnLoc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -38,14 +38,13 @@ func Init() *zap.Logger {
 	// 自定义编码器配置
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.EncodeTime = customTimeEncoder
-
 	// 设置日志级别和编码器
-	core := zapcore.NewCore(
-		zapcore.NewJSONEncoder(encoderConfig),
-		logWriter,
-		zap.NewAtomicLevelAt(zap.InfoLevel), // 设置日志级别
-	)
-
+	// core := zapcore.NewCore(
+	// 	zapcore.NewJSONEncoder(encoderConfig),
+	// 	logWriter,
+	// 	zap.NewAtomicLevelAt(zap.DebugLevel), // 设置日志级别
+	// )
+	core := zapcore.NewCore(zapcore.NewJSONEncoder(encoderConfig), zapcore.NewMultiWriteSyncer(logWriter, zapcore.AddSync(os.Stdout)), zap.DebugLevel)
 	// 创建 Logger
 	Log = zap.New(core, zap.AddCaller())
 	return Log

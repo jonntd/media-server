@@ -1,66 +1,76 @@
 # Media Server 302
+### 使用 Docker Compose 运行容器
 
-使用 Gin 实现的简单直链服务，依赖于 Alist 302 服务。
+在项目根目录下创建 `docker-compose.yml` 文件，内容如下：
 
-## 如何使用
+```yaml
+version: '3.8'
+services:
+  cloudnas:
+    image: cloudnas/clouddrive2
+    container_name: clouddrive2
+    environment:
+      - TZ=Asia/Shanghai
+      - CLOUDDRIVE_HOME=/Config
+    volumes:
+      - /data/media-server/cloud2/CloudNAS:/CloudNAS:shared
+      - /data/media-server/cloud2/Config:/Config
+      - /data/media-server/cloud2/media:/media:shared 
+    devices:
+      - /dev/fuse:/dev/fuse
+    ports:
+      - "19798:19798"
+    restart: unless-stopped
+    pid: "host"
+    privileged: true
 
-### 前置条件
+  emby_server:
+    image: "emby/embyserver_arm64v8:latest"
+    # image: "emby/embyserver:latest"
+    container_name: "emby_server"
+    restart: always
+    ports:
+      - "8096:8096"
+    volumes:
+      - /data/media-server/emby:/config
+      - /data/media-server/cloud2/CloudNAS/CloudDrive:/media
+    environment:
+      - "TZ=Asia/Shanghai"
+    networks:
+      - internal_network
+  media-server:
+    container_name: "media-server"
+    image: "ghcr.io/jonntd/media-server:latest"
+    ports:
+      - "9096:9096"
+    volumes:
+      - /data/media-server/config.yaml:/config.yaml
+      - /data/media-server/logs:/logs
+    networks:
+      - internal_network
+    environment:
+      - "TZ=Asia/Shanghai"
+networks:
+  internal_network:
+    driver: bridge
+```
 
-- 已经安装了 Alist，Emby 以及挂载路径（如 Rclone Mount 或 Clouddrive2）
 
-
-### 配置文件
-新建一个 config.yaml 文件，内容如下：
+115-cookies.txt  浏览器不大助手获取
+```
+UID=; CID=; SEID=
+```
+config.yaml 
 
 ```yaml
 server:
   # 替换成自己的挂载路径
-  # 如果你的 Emby 运行在 Windows 下，可以向下面这样填 mount-page: "F:" (大概是这样吧)
-  mount-path: /data/cloud/CloudDrive
-
-alist:
-  url: http://172.0.0.1:5244
-  # 替换成你的 Alist 公网可访问地址, infuse, emby ios 客户端需要。
-  # 填公网地址可修复 infuse 进度条问题。
-  pubilc-url: https://alist.xxxx.xxx
-  token: alist-xxxxx
+  # 如果你的 Emby 运行在 Windows 下，可以向下面这样填 mount-page: "D:/115(123456)" (大概是这样吧)
+  mount-path: /media/115(123456)
+  cookie: 115cookies
 
 emby:
-  url: http://172.0.0.1:8096
-  apikey: xxxxxx
+  url: http://emby_server:8096
+  apikey: embyApi
 
 ```
-
-`mount-path` 说明：用于替换路径前缀。例如 Emby Docker 内的路径是 /data/cloud/CloudDrive/ali-open，alist 挂载的路径 `/ali-open`， 那么此处填写 `/data/cloud/CloudDrive` 即可。
-
-
-### Dockerfile
-
-```bash
-docker run -d --name media-server-1 -p 9096:9096 -v ./config.yaml:/config.yaml -v ./logs:/logs xifowu/media-server-302:latest
-```
-
-### Docker Compose
-只需安装 config.yaml.example 文件，修改配置即可。
-
-```yml
-version: '3'
-
-services:
-  web:
-    image: "xifowu/media-server-302:latest"
-    container_name: "media-server"
-    ports:
-      - "9096:9096"
-    volumes:
-      - ./config.yaml:/config.yaml
-      - ./logs:/logs
-```
-
-## FAQ
-
-##### 为什么我的 /d/xxxxxx/xxxx.mkv 返回 401?
-> Alist 3.30.0 之后默认开了 Sign 签名全部，本程序虽然适配了生成 Sign，但仍有可能失效。实在不行你可以去 Alist 全局配置里关掉
-
-## 致谢
-参考 https://blog.738888.xyz/posts/emby_jellyfin_to_alist_directlink
