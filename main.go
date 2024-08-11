@@ -349,10 +349,13 @@ func mediaFileSync(c *gin.Context) {
 		// 	return
 		// }
 		logrus.Infoln(desiredPath)
-		sourceDir := "115:test"
-		remoteDest := "/media"
-		go syncAndCreateEmptyFiles(sourceDir, remoteDest)
-		c.JSON(200, gin.H{"status_code": 200})
+		sourceDir := viper.GetString("server.remote") + ":" + desiredPath
+		go syncAndCreateEmptyFiles(sourceDir, viper.GetString("server.mount-path"))
+		c.JSON(200, gin.H{
+			"status_code": 200,
+			"message":     "Operation successful",
+			"path":        fullPath,
+		})
 	}
 
 }
