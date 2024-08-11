@@ -340,6 +340,19 @@ func syncAndCreateEmptyFiles(sourceDir, remoteDest string) {
 }
 
 func mediaFileSync(c *gin.Context) {
+
+	clientIP := c.ClientIP()
+
+	// 检查客户端是否在5分钟内访问过
+	if _, found := requestCache.Get(clientIP); found {
+		// 如果找到了记录，说明5分钟内已经访问过，返回错误响应
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"status_code": http.StatusTooManyRequests,
+			"message":     "Please wait for 5 minutes before accessing again.",
+		})
+		return
+	}
+
 	fullPath := c.Request.URL.Path
 	re := regexp.MustCompile(`^/sync/(.+)$`)
 	matches := re.FindStringSubmatch(fullPath)
@@ -356,15 +369,19 @@ func mediaFileSync(c *gin.Context) {
 			"message":     "Operation successful",
 			"path":        fullPath,
 		})
+		requestCache.Set(clientIP, true, cache.DefaultExpiration)
 	}
 
 }
+
+var requestCache *cache.Cache
 
 func main() {
 	config.Init()
 	log := logger.Init()
 	r := gin.Default()
 	log.Info("MEDIA-SERVER-302")
+	requestCache = cache.New(5*time.Minute, 10*time.Minute)
 	goCache := cache.New(1*time.Minute, 3*time.Minute)
 	embyURL := viper.GetString("emby.url")
 	url, _ := url.Parse(embyURL)
