@@ -306,21 +306,23 @@ func syncAndCreateEmptyFiles(sourceDir, remoteDest string) {
 		outFilePath := filepath.Join(destinationPath, fileName)
 		strmFilePath := strings.TrimSuffix(outFilePath, filepath.Ext(outFilePath)) + ".strm"
 		if _, err := os.Stat(strmFilePath); os.IsNotExist(err) {
-			// 文件不存在，创建一个新的空文件
-			// 创建目标路径中的空文件
-			file, err := os.OpenFile(strmFilePath, os.O_CREATE|os.O_EXCL, 0666)
+			// 创建 .strm 文件
+			file, err := os.OpenFile(strmFilePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0666)
 			if err != nil {
 				if os.IsExist(err) {
 					fmt.Printf("File already exists: %s\n", strmFilePath)
 				} else {
 					fmt.Printf("Error creating file: %v\n", err)
 				}
+				return
 			}
-			// 关闭文件
 			defer file.Close()
+
+			// 将 outFilePath 写入 .strm 文件
 			_, err = file.WriteString(outFilePath + "\n")
 			if err != nil {
 				fmt.Printf("Error writing to file: %v\n", err)
+				return
 			}
 			fmt.Printf("Empty file created: %s\n", strmFilePath)
 		}
