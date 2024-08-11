@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,9 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -183,11 +187,178 @@ func extractIDFromPath(path string) (string, error) {
 	return "", fmt.Errorf("no match found")
 }
 
+func postContent(content string) {
+
+	resp, err := http.PostForm(viper.GetString("server.wx-url"), url.Values{"form": {"text"}, "content": {content}})
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+	defer resp.Body.Close()
+	fmt.Println("Response status:", resp.Status)
+}
+
+func syncAndCreateEmptyFiles(sourceDir, remoteDest string) {
+	colonIndex := strings.Index(sourceDir, ":")
+
+	// Run rclone sync with the given flags
+	cmd := exec.Command("rclone", "sync", sourceDir, filepath.Join(remoteDest, sourceDir[colonIndex+1:]), "-v", "--delete-after", "--size-only", "--ignore-times", "--ignore-existing", "--max-size", "10M", "--transfers", "10", "--multi-thread-streams", "2", "--local-encoding", "Slash,InvalidUtf8", "--115-encoding", "Slash,InvalidUtf8", "--exclude", "*.strm")
+	// 获取命令的标准输出和标准错误的管道 "-vv",
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Println("Error creating StdoutPipe:", err)
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		fmt.Println("Error creating StderrPipe:", err)
+		return
+	}
+
+	// 启动命令
+	if err := cmd.Start(); err != nil {
+		fmt.Println("Error starting command:", err)
+		return
+	}
+
+	// 创建读取器来实时读取输出
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			fmt.Println("stdout:", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			fmt.Println("Error reading stdout:", err)
+		}
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			re := regexp.MustCompile(`INFO\s+: (.+?): Removing directory`)
+			line := scanner.Text()
+			matches := re.FindStringSubmatch(line)
+			if len(matches) > 1 {
+				folderPath := filepath.Join(remoteDest, sourceDir[colonIndex+1:], matches[1])
+
+				if _, err := os.Stat(folderPath); err == nil {
+					// 文件夹存在，进行删除
+					err = os.RemoveAll(folderPath)
+					if err != nil {
+						fmt.Printf("Failed to delete folder: %s\n", err)
+					} else {
+						fmt.Printf("Folder successfully deleted: %s\n", folderPath)
+					}
+				} else if os.IsNotExist(err) {
+					// 文件夹不存在
+					fmt.Printf("Folder does not exist: %s\n", folderPath)
+				} else {
+					// 其他错误
+					fmt.Printf("Error checking folder: %v\n", err)
+				}
+			}
+			fmt.Println("stderr:", scanner.Text())
+		}
+		if err := scanner.Err(); err != nil {
+			fmt.Println("Error reading stderr:", err)
+		}
+	}()
+
+	// 等待命令完成
+	if err := cmd.Wait(); err != nil {
+		fmt.Println("Error waiting for command:", err)
+	}
+
+	cmd = exec.Command("rclone", "lsf", "-R", sourceDir, "-vv", "--files-only", "--min-size", "100M", "--transfers", "10", "--multi-thread-streams", "2", "--local-encoding", "Slash,InvalidUtf8", "--115-encoding", "Slash,InvalidUtf8")
+
+	// 获取命令的标准输出管道  "-vv",
+	stdout, err = cmd.StdoutPipe()
+	if err != nil {
+		fmt.Printf("Error creating StdoutPipe: %v\n", err)
+		return
+	}
+
+	// 启动命令
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("Error starting command: %v\n", err)
+		return
+	}
+
+	// 使用 bufio.Scanner 实时读取输出
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		filePath := scanner.Text()
+		fileName := filepath.Base(filePath)
+		relativePath := filepath.Dir(filePath)
+
+		// 构造目标路径
+		destinationPath := filepath.Join(remoteDest, sourceDir[colonIndex+1:], relativePath)
+		// fmt.Printf("filePath: %v\n", filePath)
+		// fmt.Printf("fileName: %v\n", fileName)
+		// fmt.Printf("destinationPath: %v\n", destinationPath)
+
+		// 确保目标路径存在
+		err := os.MkdirAll(destinationPath, os.ModePerm)
+		if err != nil {
+			fmt.Printf("Error creating directories: %v\n", err)
+			continue
+		}
+		outFilePath := filepath.Join(destinationPath, fileName)
+		strmFilePath := strings.TrimSuffix(outFilePath, filepath.Ext(outFilePath)) + ".strm"
+		if _, err := os.Stat(strmFilePath); os.IsNotExist(err) {
+			// 文件不存在，创建一个新的空文件
+			// 创建目标路径中的空文件
+			file, err := os.OpenFile(strmFilePath, os.O_CREATE|os.O_EXCL, 0666)
+			if err != nil {
+				if os.IsExist(err) {
+					fmt.Printf("File already exists: %s\n", strmFilePath)
+				} else {
+					fmt.Printf("Error creating file: %v\n", err)
+				}
+			}
+			// 关闭文件
+			defer file.Close()
+			_, err = file.WriteString(outFilePath + "\n")
+			if err != nil {
+				fmt.Printf("Error writing to file: %v\n", err)
+			}
+			fmt.Printf("Empty file created: %s\n", strmFilePath)
+		}
+	}
+
+	// 检查命令执行错误
+	if err := cmd.Wait(); err != nil {
+		fmt.Printf("Error waiting for command: %v\n", err)
+	}
+
+	// 检查 bufio.Scanner 错误
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("Error reading command output: %v\n", err)
+	}
+}
+
+func mediaFileSync(c *gin.Context) {
+	fullPath := c.Request.URL.Path
+	re := regexp.MustCompile(`^/sync/(.+)$`)
+	matches := re.FindStringSubmatch(fullPath)
+	if len(matches) > 1 {
+		desiredPath := matches[1]
+		// if c.Request.Header.Get("X-Emby-Token") != viper.GetString("emby.apikey") {
+		// 	return
+		// }
+		logrus.Infoln(desiredPath)
+		sourceDir := "115:test"
+		remoteDest := "/media"
+		go syncAndCreateEmptyFiles(sourceDir, remoteDest)
+		c.JSON(200, gin.H{"status_code": 200})
+	}
+
+}
+
 func main() {
 	config.Init()
 	log := logger.Init()
 	r := gin.Default()
-	gin.ForceConsoleColor()
 	log.Info("MEDIA-SERVER-302")
 	goCache := cache.New(1*time.Minute, 3*time.Minute)
 	embyURL := viper.GetString("emby.url")
@@ -201,6 +372,8 @@ func main() {
 		logrus.Infoln(userAgent)
 		fullPath := c.Request.URL.Path
 		logrus.Infoln(fullPath)
+		mediaFileSync(c)
+
 		re := regexp.MustCompile(`^/path/(.+)$`)
 		matches := re.FindStringSubmatch(fullPath)
 		if len(matches) > 1 {
