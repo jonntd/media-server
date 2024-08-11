@@ -38,6 +38,7 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /app/media-server .
 COPY --from=rclone /usr/bin/rclone /usr/bin/
+COPY --from=rclone /usr/bin/rclone .
 
 ENV GIN_MODE=release
 ENTRYPOINT ["/media-server"]

@@ -187,6 +187,7 @@ func main() {
 	config.Init()
 	log := logger.Init()
 	r := gin.Default()
+	gin.ForceConsoleColor()
 	log.Info("MEDIA-SERVER-302")
 	goCache := cache.New(1*time.Minute, 3*time.Minute)
 	embyURL := viper.GetString("emby.url")
