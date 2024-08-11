@@ -197,13 +197,17 @@ func main() {
 
 	r.Any("/*actions", func(c *gin.Context) {
 		userAgent := c.Request.Header.Get("User-Agent")
-		// logrus.Infoln(userAgent)
+		logrus.Infoln(userAgent)
 		fullPath := c.Request.URL.Path
-		// logrus.Infoln(fullPath)
+		logrus.Infoln(fullPath)
 		re := regexp.MustCompile(`^/path/(.+)$`)
 		matches := re.FindStringSubmatch(fullPath)
 		if len(matches) > 1 {
 			desiredPath := matches[1]
+			if c.Request.Header.Get("X-Emby-Token") != viper.GetString("emby.apikey") {
+				proxy.ServeHTTP(c.Writer, c.Request)
+				return
+			}
 			files, err := DriveClient.GetFile(desiredPath)
 			if err != nil {
 				proxy.ServeHTTP(c.Writer, c.Request)
@@ -215,7 +219,7 @@ func main() {
 				proxy.ServeHTTP(c.Writer, c.Request)
 				return
 			}
-			// logrus.Infoln(down_url)
+			logrus.Infoln(down_url)
 			c.Redirect(302, down_url)
 			return
 		}
@@ -235,7 +239,7 @@ func main() {
 			return
 		}
 		// print currenturi
-		// logrus.Infoln(currentURI)
+		logrus.Infoln(currentURI)
 		re = regexp.MustCompile(`/[Vv]ideos/(\S+)/(stream|original|master)`)
 		// 执行匹配操作
 		matches = re.FindStringSubmatch(currentURI)
@@ -246,13 +250,11 @@ func main() {
 			proxy.ServeHTTP(c.Writer, c.Request)
 			return
 		}
-
 		videoID, err := extractIDFromPath(currentURI)
 		if err != nil {
 			proxy.ServeHTTP(c.Writer, c.Request)
 			return
 		}
-
 		mediaSourceID := c.Query("MediaSourceId")
 		if mediaSourceID == "" {
 			mediaSourceID = c.Query("mediaSourceId")
@@ -272,7 +274,7 @@ func main() {
 			proxy.ServeHTTP(c.Writer, c.Request)
 			return
 		}
-		// log.Info("Emby 原地址：" + embyRes["path"].(string))
+		log.Info("Emby 原地址：" + embyRes["path"].(string))
 		alistPath := strings.Replace(embyRes["path"].(string), viper.GetString("server.mount-path"), "", 1)
 		alistPath = ensureLeadingSlash(alistPath)
 		log.Info("alistPath  " + alistPath)
@@ -291,6 +293,8 @@ func main() {
 		// fullURL := fmt.Sprintf("%s/path%s", server_url, alistPath)
 		// req, err := http.NewRequest("GET", fullURL, nil)
 		req, err := http.NewRequest("GET", "http://localhost:9096/path"+alistPath, nil)
+		req.Header.Add("X-Emby-Token", viper.GetString("emby.apikey"))
+
 		if err != nil {
 			log.Error(fmt.Sprintf("创建请求失败: %v", err))
 			proxy.ServeHTTP(c.Writer, c.Request)
@@ -317,7 +321,7 @@ func main() {
 				return
 			}
 			url := redirected_URL.String()
-			// log.Info("redirected_URL ：" + url)
+			log.Info("redirected_URL ：" + url)
 			goCache.Set(cacheKey, url, cache.DefaultExpiration)
 			c.Redirect(http.StatusFound, url)
 		}
@@ -339,7 +343,7 @@ func RemoveQueryParams(originalURL string) string {
 
 func ProxyPlaybackInfo(c *gin.Context, proxy *httputil.ReverseProxy) (response map[string]any, skip bool) {
 	currentURI := c.Request.RequestURI
-	// log.Println("当前链接：" + currentURI)
+	log.Println("当前链接：" + currentURI)
 	re := regexp.MustCompile(`/[Ii]tems/(\S+)/PlaybackInfo`)
 	matches := re.FindStringSubmatch(currentURI)
 	if len(matches) < 1 {
@@ -370,7 +374,7 @@ func ProxyPlaybackInfo(c *gin.Context, proxy *httputil.ReverseProxy) (response m
 	mediaSources := response["MediaSources"].([]interface{})
 	for _, mediaSource := range mediaSources {
 		ms := mediaSource.(map[string]interface{})
-		// log.Println("当前文件路径：" + ms["Path"].(string))
+		log.Println("当前文件路径：" + ms["Path"].(string))
 		isCloud := hitReplacePath(ms["Path"].(string))
 		if !isCloud {
 			log.Println("跳过：不是云盘文件")
