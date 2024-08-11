@@ -27,7 +27,8 @@ func Init() *zap.Logger {
 	// 设置中国时区
 	chnLoc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
-		panic(fmt.Errorf("failed to load Asia/Shanghai location: %w", err))
+		chnLoc = time.Local // 或者 time.UTC
+		fmt.Println("failed to load Asia/Shanghai location: %w", err)
 	}
 
 	// 自定义时间格式化函数
