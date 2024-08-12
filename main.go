@@ -470,7 +470,7 @@ func main() {
 	log := logger.Init()
 	r := gin.Default()
 	log.Info("MEDIA-SERVER-302")
-	requestCache = cache.New(1*time.Minute, 30*time.Second)
+	requestCache = cache.New(10*time.Second, 30*time.Second)
 	goCache := cache.New(1*time.Minute, 3*time.Minute)
 	embyURL := viper.GetString("emby.url")
 	url, _ := url.Parse(embyURL)
