@@ -339,193 +339,63 @@ func syncAndCreateEmptyFiles(sourceDir, remoteDest string) {
 	}
 }
 
-func mediaFileSync(c *gin.Context) {
+func mediaFileSync(c *gin.Context) bool {
 
 	clientIP := c.ClientIP()
-
-	// 检查客户端是否在5分钟内访问过
-	if _, found := requestCache.Get(clientIP); found {
-		// 如果找到了记录，说明5分钟内已经访问过，返回错误响应
-		c.JSON(http.StatusTooManyRequests, gin.H{
-			"status_code": http.StatusTooManyRequests,
-			"message":     "Please wait for 5 minutes before accessing again.",
-		})
-		return
-	}
-
-	fullPath := c.Request.URL.Path
+	fullPath := c.Param("actions")
 	re := regexp.MustCompile(`^/sync/(.+)$`)
 	matches := re.FindStringSubmatch(fullPath)
 	if len(matches) > 1 {
 		desiredPath := matches[1]
 		// if c.Request.Header.Get("X-Emby-Token") != viper.GetString("emby.apikey") {
-		// 	return
+		// 	return true
 		// }
-		logrus.Infoln(desiredPath)
+		if _, found := requestCache.Get(clientIP); found {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"status_code": http.StatusTooManyRequests,
+				"message":     "Please wait for 1 minutes before accessing again.",
+			})
+			return true
+		}
 		sourceDir := viper.GetString("server.remote") + ":" + desiredPath
 		go syncAndCreateEmptyFiles(sourceDir, viper.GetString("server.mount-path"))
-		c.JSON(200, gin.H{
-			"status_code": 200,
-			"message":     "Operation successful",
-			"path":        fullPath,
-		})
+		c.String(200, "ok")
 		requestCache.Set(clientIP, true, cache.DefaultExpiration)
+		return true
 	}
-
+	return false
 }
-
-var requestCache *cache.Cache
-
-func main() {
-	config.Init()
-	log := logger.Init()
-	r := gin.Default()
-	log.Info("MEDIA-SERVER-302")
-	requestCache = cache.New(5*time.Minute, 10*time.Minute)
-	goCache := cache.New(1*time.Minute, 3*time.Minute)
-	embyURL := viper.GetString("emby.url")
-	url, _ := url.Parse(embyURL)
-	proxy := httputil.NewSingleHostReverseProxy(url)
-	cookie := viper.GetString("server.cookie")
-	DriveClient = _115.MustNew115DriveClient(cookie)
-
-	r.Any("/*actions", func(c *gin.Context) {
-		userAgent := c.Request.Header.Get("User-Agent")
-		logrus.Infoln(userAgent)
-		fullPath := c.Request.URL.Path
-		logrus.Infoln(fullPath)
-		mediaFileSync(c)
-
-		re := regexp.MustCompile(`^/path/(.+)$`)
-		matches := re.FindStringSubmatch(fullPath)
-		if len(matches) > 1 {
-			desiredPath := matches[1]
-			if c.Request.Header.Get("X-Emby-Token") != viper.GetString("emby.apikey") {
-				proxy.ServeHTTP(c.Writer, c.Request)
-				return
-			}
-			files, err := DriveClient.GetFile(desiredPath)
-			if err != nil {
-				proxy.ServeHTTP(c.Writer, c.Request)
-				return
-			}
-			// /aaa/新神榜：哪吒重生/新神榜：哪吒重生.mp4
-			down_url, err := DriveClient.GetFileURL(files, userAgent)
-			if err != nil {
-				proxy.ServeHTTP(c.Writer, c.Request)
-				return
-			}
-			logrus.Infoln(down_url)
-			c.Redirect(302, down_url)
-			return
-		}
-
-		response, skip := ProxyPlaybackInfo(c, proxy)
-		if !skip {
-			c.JSON(http.StatusOK, response)
-			return
-		}
-		currentURI := c.Request.RequestURI
-		userAgent = strings.ToLower(userAgent)
-		cacheKey := RemoveQueryParams(currentURI) + userAgent
-
-		if cacheLink, found := goCache.Get(cacheKey); found {
-			logrus.Infoln("命中缓存")
-			c.Redirect(302, cacheLink.(string))
-			return
-		}
-		// print currenturi
-		logrus.Infoln(currentURI)
-		re = regexp.MustCompile(`/[Vv]ideos/(\S+)/(stream|original|master)`)
-		// 执行匹配操作
-		matches = re.FindStringSubmatch(currentURI)
-		videoID := ""
-		if len(matches) >= 2 {
-			videoID = matches[1]
-		} else {
-			proxy.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-		videoID, err := extractIDFromPath(currentURI)
-		if err != nil {
-			proxy.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-		mediaSourceID := c.Query("MediaSourceId")
-		if mediaSourceID == "" {
-			mediaSourceID = c.Query("mediaSourceId")
-		}
-		if videoID == "" || mediaSourceID == "" {
-			proxy.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-		itemInfoUri, itemId, etag, mediaSourceId, apiKey := GetItemPathInfo(c)
-		embyRes, err := GetEmbyItems(itemInfoUri, itemId, etag, mediaSourceId, apiKey)
-		if err != nil {
-			log.Error(fmt.Sprintf("获取 Emby 失败。错误信息: %v", err))
-			proxy.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-		if !strings.HasPrefix(embyRes["path"].(string), viper.GetString("server.mount-path")) {
-			proxy.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-		log.Info("Emby 原地址：" + embyRes["path"].(string))
-		alistPath := strings.Replace(embyRes["path"].(string), viper.GetString("server.mount-path"), "", 1)
-		alistPath = ensureLeadingSlash(alistPath)
-		log.Info("alistPath  " + alistPath)
-
-		originalHeaders := make(map[string]string)
-		for key, value := range c.Request.Header {
-			if len(value) > 0 {
-				originalHeaders[key] = value[0]
-			}
-		}
-
-		client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
-		// server_url := viper.GetString("server.url") + alistPath
-		// log.Info("115 链接：" + server_url)
-		// server_url := c.Request.URL.Scheme + "://" + c.Request.Host
-		// fullURL := fmt.Sprintf("%s/path%s", server_url, alistPath)
-		// req, err := http.NewRequest("GET", fullURL, nil)
-		req, err := http.NewRequest("GET", "http://localhost:9096/path"+alistPath, nil)
-		req.Header.Add("X-Emby-Token", viper.GetString("emby.apikey"))
-
-		if err != nil {
-			log.Error(fmt.Sprintf("创建请求失败: %v", err))
-			proxy.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-		// 设置请求头
-		for key, value := range originalHeaders {
-			req.Header.Add(key, value)
-		}
-		// 发送请求
-		resp, err := client.Do(req)
-		if err != nil {
-			log.Error(fmt.Sprintf("发送请求失败: %v", err))
-			proxy.ServeHTTP(c.Writer, c.Request)
-			return
-		}
-		defer resp.Body.Close() // 确保在函数结束时关闭响应体
-
-		if resp.StatusCode == http.StatusFound { // 302
-			// 获取重定向地址
-			redirected_URL, err := resp.Location()
-			if err != nil {
-				proxy.ServeHTTP(c.Writer, c.Request)
-				return
-			}
-			url := redirected_URL.String()
-			log.Info("redirected_URL ：" + url)
-			goCache.Set(cacheKey, url, cache.DefaultExpiration)
-			c.Redirect(http.StatusFound, url)
-		}
-	})
-
-	if err := r.Run(":9096"); err != nil {
-		panic(err)
+func GetRedirectURL(modifiedUrl string, originalHeaders map[string]string) (string, error) {
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse // 仅获取重定向URL，不跟随
+		},
 	}
+	req, err := http.NewRequest("GET", modifiedUrl, nil)
+	if err != nil {
+		return "", err // 创建请求失败
+	}
+	req.Header.Add("X-Emby-Token", viper.GetString("emby.apikey"))
+
+	for key, value := range originalHeaders {
+		req.Header.Add(key, value)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err // 发送请求失败
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusFound { // 302
+		redirectedURL, err := resp.Location()
+		if err != nil {
+			return "", err // 获取重定向URL失败
+		}
+		return redirectedURL.String(), nil
+	}
+
+	return "", fmt.Errorf("no redirect or not a 302 status code") // 非302状态码
 }
 
 func RemoveQueryParams(originalURL string) string {
@@ -591,4 +461,139 @@ func hitReplacePath(path string) bool {
 func replaceIgnoreCase(input string, old string, new string) string {
 	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(old))
 	return re.ReplaceAllString(input, new)
+}
+
+var requestCache *cache.Cache
+
+func main() {
+	config.Init()
+	log := logger.Init()
+	r := gin.Default()
+	log.Info("MEDIA-SERVER-302")
+	requestCache = cache.New(1*time.Minute, 30*time.Second)
+	goCache := cache.New(1*time.Minute, 3*time.Minute)
+	embyURL := viper.GetString("emby.url")
+	url, _ := url.Parse(embyURL)
+	proxy := httputil.NewSingleHostReverseProxy(url)
+	cookie := viper.GetString("server.cookie")
+	DriveClient = _115.MustNew115DriveClient(cookie)
+	r.Any("/*actions", func(c *gin.Context) {
+		userAgent := c.Request.Header.Get("User-Agent")
+		actions := c.Param("actions")
+		logrus.Infoln("Actions:", actions)
+		if err := mediaFileSync(c); err {
+			c.String(200, actions)
+			return
+		}
+
+		if strings.HasPrefix(actions, "/ping/") {
+			remainingPath := strings.TrimPrefix(actions, "/ping/")
+			logrus.Infoln("Remaining Path:", remainingPath)
+			c.String(200, "Remaining Path: %s", remainingPath)
+			return
+		}
+		re := regexp.MustCompile(`^/path/(.+)$`)
+		matches := re.FindStringSubmatch(actions)
+		if len(matches) > 1 {
+			desiredPath := matches[1]
+			if c.Request.Header.Get("X-Emby-Token") != viper.GetString("emby.apikey") {
+				proxy.ServeHTTP(c.Writer, c.Request)
+				return
+			}
+			files, err := DriveClient.GetFile(desiredPath)
+			if err != nil {
+				proxy.ServeHTTP(c.Writer, c.Request)
+				return
+			}
+			// /aaa/新神榜：哪吒重生/新神榜：哪吒重生.mp4
+			down_url, err := DriveClient.GetFileURL(files, userAgent)
+			if err != nil {
+				proxy.ServeHTTP(c.Writer, c.Request)
+				return
+			}
+			logrus.Infoln(down_url)
+			c.Redirect(302, down_url)
+			return
+		}
+
+		response, skip := ProxyPlaybackInfo(c, proxy)
+		if !skip {
+			c.JSON(http.StatusOK, response)
+			return
+		}
+		currentURI := c.Request.RequestURI
+		userAgent = strings.ToLower(userAgent)
+		cacheKey := RemoveQueryParams(currentURI) + userAgent
+
+		if cacheLink, found := goCache.Get(cacheKey); found {
+			logrus.Infoln("命中缓存")
+			c.Redirect(302, cacheLink.(string))
+			return
+		}
+		logrus.Infoln(currentURI)
+		re = regexp.MustCompile(`/[Vv]ideos/(\S+)/(stream|original|master)`)
+		matches = re.FindStringSubmatch(currentURI)
+		videoID := ""
+		if len(matches) >= 2 {
+			videoID = matches[1]
+		} else {
+			proxy.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		videoID, err := extractIDFromPath(currentURI)
+		if err != nil {
+			proxy.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		mediaSourceID := c.Query("MediaSourceId")
+		if mediaSourceID == "" {
+			mediaSourceID = c.Query("mediaSourceId")
+		}
+		if videoID == "" || mediaSourceID == "" {
+			proxy.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		itemInfoUri, itemId, etag, mediaSourceId, apiKey := GetItemPathInfo(c)
+		embyRes, err := GetEmbyItems(itemInfoUri, itemId, etag, mediaSourceId, apiKey)
+		if err != nil {
+			log.Error(fmt.Sprintf("获取 Emby 失败。错误信息: %v", err))
+			proxy.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		if !strings.HasPrefix(embyRes["path"].(string), viper.GetString("server.mount-path")) {
+			proxy.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		log.Info("Emby Path：" + embyRes["path"].(string))
+		alistPath := strings.Replace(embyRes["path"].(string), viper.GetString("server.mount-path"), "", 1)
+		alistPath = ensureLeadingSlash(alistPath)
+		log.Info("115Path: " + alistPath)
+
+		originalHeaders := make(map[string]string)
+		for key, value := range c.Request.Header {
+			if len(value) > 0 {
+				originalHeaders[key] = value[0]
+			}
+		}
+
+		scheme := c.Request.Header.Get("X-Forwarded-Proto")
+		if scheme == "" {
+			scheme = "http"
+		}
+		server_url := scheme + "://" + c.Request.Host + "/path" + alistPath
+		logrus.Infoln("Server URL: " + server_url)
+		url, err := GetRedirectURL(server_url, originalHeaders)
+		if err != nil {
+			log.Error(fmt.Sprintf("获取 Alist 地址失败。错误信息: %v", err))
+			proxy.ServeHTTP(c.Writer, c.Request)
+			return
+		}
+		goCache.Set(cacheKey, url, cache.DefaultExpiration)
+		c.Redirect(http.StatusFound, url)
+
+	})
+
+	if err := r.Run(":9096"); err != nil {
+		panic(err)
+	}
 }
