@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	_115 "media-server/115"
@@ -201,28 +202,42 @@ func postContent(content string) {
 func syncAndCreateEmptyFiles(sourceDir, remoteDest string) {
 	colonIndex := strings.Index(sourceDir, ":")
 
-	// Run rclone sync with the given flags
+	// 使用 sync 命令进行同步
+	err := runRcloneSync(sourceDir, remoteDest, colonIndex)
+	if err != nil {
+		fmt.Printf("Error during sync: %v\n", err)
+		return
+	}
+
+	// 使用 lsf 命令列出文件并创建 .strm 文件
+	err = createStrmFiles(sourceDir, remoteDest, colonIndex)
+	if err != nil {
+		fmt.Printf("Error creating .strm files: %v\n", err)
+	}
+}
+
+func runRcloneSync(sourceDir, remoteDest string, colonIndex int) error {
 	cmd := exec.Command("rclone", "sync", sourceDir, filepath.Join(remoteDest, sourceDir[colonIndex+1:]), "--update", "--fast-list", "--checkers", "16", "--log-level", "INFO", "--delete-after", "--size-only", "--ignore-times", "--ignore-existing", "--ignore-checksum", "--max-size", "10M", "--transfers", "10", "--multi-thread-streams", "2", "--local-encoding", "Slash,InvalidUtf8", "--115-encoding", "Slash,InvalidUtf8", "--exclude", "*.strm")
-	// 获取命令的标准输出和标准错误的管道 "-vv",
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		fmt.Println("Error creating StdoutPipe:", err)
-		return
+		return fmt.Errorf("error creating StdoutPipe: %v", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		fmt.Println("Error creating StderrPipe:", err)
-		return
+		return fmt.Errorf("error creating StderrPipe: %v", err)
 	}
 
-	// 启动命令
 	if err := cmd.Start(); err != nil {
-		fmt.Println("Error starting command:", err)
-		return
+		return fmt.Errorf("error starting command: %v", err)
 	}
 
-	// 创建读取器来实时读取输出
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// 读取 stdout
 	go func() {
+		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			fmt.Println("stdout:", scanner.Text())
@@ -232,59 +247,51 @@ func syncAndCreateEmptyFiles(sourceDir, remoteDest string) {
 		}
 	}()
 
+	// 读取 stderr 并删除目录
 	go func() {
+		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			re := regexp.MustCompile(`INFO\s+: (.+?): Removing directory`)
 			line := scanner.Text()
+			fmt.Println("stderr:", line)
+
+			re := regexp.MustCompile(`INFO\s+: (.+?): Removing directory`)
 			matches := re.FindStringSubmatch(line)
 			if len(matches) > 1 {
 				folderPath := filepath.Join(remoteDest, sourceDir[colonIndex+1:], matches[1])
-
-				if _, err := os.Stat(folderPath); err == nil {
-					// 文件夹存在，进行删除
-					err = os.RemoveAll(folderPath)
-					if err != nil {
-						fmt.Printf("Failed to delete folder: %s\n", err)
-					} else {
-						fmt.Printf("Folder successfully deleted: %s\n", folderPath)
-					}
-				} else if os.IsNotExist(err) {
-					// 文件夹不存在
-					fmt.Printf("Folder does not exist: %s\n", folderPath)
+				if err := os.RemoveAll(folderPath); err != nil {
+					fmt.Printf("Failed to delete folder: %v\n", err)
 				} else {
-					// 其他错误
-					fmt.Printf("Error checking folder: %v\n", err)
+					fmt.Printf("Folder successfully deleted: %s\n", folderPath)
 				}
 			}
-			fmt.Println("stderr:", scanner.Text())
 		}
 		if err := scanner.Err(); err != nil {
 			fmt.Println("Error reading stderr:", err)
 		}
 	}()
 
-	// 等待命令完成
+	wg.Wait()
+
 	if err := cmd.Wait(); err != nil {
-		fmt.Println("Error waiting for command:", err)
+		return fmt.Errorf("error waiting for command: %v", err)
 	}
 
-	cmd = exec.Command("rclone", "lsf", "-R", sourceDir, "-vv", "--files-only", "--min-size", "100M", "--transfers", "10", "--multi-thread-streams", "2", "--local-encoding", "Slash,InvalidUtf8", "--115-encoding", "Slash,InvalidUtf8")
+	return nil
+}
 
-	// 获取命令的标准输出管道  "-vv",
-	stdout, err = cmd.StdoutPipe()
+func createStrmFiles(sourceDir, remoteDest string, colonIndex int) error {
+	cmd := exec.Command("rclone", "lsf", "-R", sourceDir, "-vv", "--files-only", "--min-size", "100M", "--transfers", "10", "--multi-thread-streams", "2", "--local-encoding", "Slash,InvalidUtf8", "--115-encoding", "Slash,InvalidUtf8")
+
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		fmt.Printf("Error creating StdoutPipe: %v\n", err)
-		return
+		return fmt.Errorf("error creating StdoutPipe: %v", err)
 	}
 
-	// 启动命令
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("Error starting command: %v\n", err)
-		return
+		return fmt.Errorf("error starting command: %v", err)
 	}
 
-	// 使用 bufio.Scanner 实时读取输出
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		filePath := scanner.Text()
@@ -293,52 +300,41 @@ func syncAndCreateEmptyFiles(sourceDir, remoteDest string) {
 
 		// 构造目标路径
 		destinationPath := filepath.Join(remoteDest, sourceDir[colonIndex+1:], relativePath)
-		// fmt.Printf("filePath: %v\n", filePath)
-		// fmt.Printf("fileName: %v\n", fileName)
-		// fmt.Printf("destinationPath: %v\n", destinationPath)
-
-		// 确保目标路径存在
-		err := os.MkdirAll(destinationPath, os.ModePerm)
-		if err != nil {
+		if err := os.MkdirAll(destinationPath, os.ModePerm); err != nil {
 			fmt.Printf("Error creating directories: %v\n", err)
 			continue
 		}
+
 		outFilePath := filepath.Join(destinationPath, fileName)
 		strmFilePath := strings.TrimSuffix(outFilePath, filepath.Ext(outFilePath)) + ".strm"
 		if _, err := os.Stat(strmFilePath); os.IsNotExist(err) {
 			// 创建 .strm 文件
-			file, err := os.OpenFile(strmFilePath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0666)
+			file, err := os.Create(strmFilePath)
 			if err != nil {
-				if os.IsExist(err) {
-					fmt.Printf("File already exists: %s\n", strmFilePath)
-				} else {
-					fmt.Printf("Error creating file: %v\n", err)
-				}
-				return
+				fmt.Printf("Error creating file: %v\n", err)
+				continue
 			}
 			defer file.Close()
 
-			// 将 outFilePath 写入 .strm 文件
 			_, err = file.WriteString(outFilePath + "\n")
 			if err != nil {
 				fmt.Printf("Error writing to file: %v\n", err)
-				return
+			} else {
+				fmt.Printf("Empty file created: %s\n", strmFilePath)
 			}
-			fmt.Printf("Empty file created: %s\n", strmFilePath)
 		}
 	}
 
-	// 检查命令执行错误
 	if err := cmd.Wait(); err != nil {
-		fmt.Printf("Error waiting for command: %v\n", err)
+		return fmt.Errorf("error waiting for command: %v", err)
 	}
 
-	// 检查 bufio.Scanner 错误
 	if err := scanner.Err(); err != nil {
-		fmt.Printf("Error reading command output: %v\n", err)
+		return fmt.Errorf("error reading command output: %v", err)
 	}
-}
 
+	return nil
+}
 func mediaFileSync(c *gin.Context) bool {
 
 	clientIP := c.ClientIP()
